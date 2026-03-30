@@ -1,0 +1,17 @@
+[project]
+name = "huahua-assistant"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "funasr>=1.3",
+    "kokoro-onnx",
+    "openwakeword",
+    "silero-vad",
+    "sounddevice",
+    "numpy",
+    "python-dotenv",
+    "openai",
+    "kokoro>=0.9.4",
+    "ordered-set>=4.1.0",
+    "soundfile",
+]
