@@ -14,12 +14,13 @@ class KokoroTTS:
     def __init__(self, voice: str | None = None, model_path: str | None = None):
         self.voice = voice or config.kokoro_voice
         self.model_path = model_path or config.kokoro_model_path
+        self.default_repo_id = "hexgrad/Kokoro-82M"
         self._pipeline: KPipeline | None = None
         self._lang_code = "z"  # default to Chinese
 
     def _load_model(self):
         if self._pipeline is None:
-            repo_id = self.model_path if self.model_path else None
+            repo_id = self.model_path if self.model_path else self.default_repo_id
             self._pipeline = KPipeline(lang_code=self._lang_code, repo_id=repo_id)
 
     def speak(self, text: str) -> np.ndarray:

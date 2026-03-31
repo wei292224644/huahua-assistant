@@ -1,4 +1,5 @@
 """唤醒词检测 — VAD + FunASR 方案"""
+
 import asyncio
 import logging
 from typing import AsyncIterator, Callable, Awaitable
@@ -6,7 +7,9 @@ import numpy as np
 from src.config import config
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 
 class WakewordDetector:
@@ -29,6 +32,7 @@ class WakewordDetector:
         # 延迟导入，避免循环依赖
         self._vad = None
         self._stt = None
+        self._audio_stream: object | None = None  # 保存麦克风流引用
 
         # VAD 每次需要 512 样本（16kHz）
         self._vad_chunk_size = 512
@@ -36,6 +40,7 @@ class WakewordDetector:
     def _get_vad(self):
         if self._vad is None:
             from src.vad.silero_vad import SileroVad
+
             logger.info("Loading SileroVAD...")
             self._vad = SileroVad()
             logger.info("SileroVAD loaded")
@@ -44,6 +49,7 @@ class WakewordDetector:
     def _get_stt(self):
         if self._stt is None:
             from src.stt.whisper import FunASRSTT
+
             logger.info("Loading FunASRSTT...")
             self._stt = FunASRSTT()
             logger.info("FunASRSTT loaded")
@@ -66,6 +72,7 @@ class WakewordDetector:
         if audio_stream is None:
             logger.info(f"Creating MicrophoneStream at {self.sample_rate}Hz")
             audio_stream = MicrophoneStream(sample_rate=self.sample_rate)
+            self._audio_stream = audio_stream  # 保存引用以便stop()时可以关闭
 
         self._running = True
         vad = self._get_vad()
@@ -98,7 +105,9 @@ class WakewordDetector:
                 num_chunks = len(audio_frame) // self._vad_chunk_size
 
                 for i in range(num_chunks):
-                    chunk = audio_frame[i * self._vad_chunk_size:(i + 1) * self._vad_chunk_size]
+                    chunk = audio_frame[
+                        i * self._vad_chunk_size : (i + 1) * self._vad_chunk_size
+                    ]
                     is_speech = vad.is_speech(chunk)
 
                     if is_speech:
@@ -112,30 +121,51 @@ class WakewordDetector:
                         # 持续录音，直到语音段结束
                         audio_buffer.append(chunk)
                         silence_chunks = 0
-                        logger.debug(f"Recording: buffer has {len(audio_buffer)} chunks")
+                        logger.debug(
+                            f"Recording: buffer has {len(audio_buffer)} chunks"
+                        )
                     else:
                         # 静音
                         if is_recording:
                             audio_buffer.append(chunk)
                             silence_chunks += 1
-                            logger.debug(f"Silence while recording: {silence_chunks} chunks")
+                            logger.debug(
+                                f"Silence while recording: {silence_chunks} chunks"
+                            )
 
                             # 连续静音超过阈值，语音段结束
-                            if silence_chunks >= SPEECH_THRESHOLD and len(audio_buffer) >= MIN_AUDIO_CHUNKS:
-                                logger.info(f"语音段结束，识别中... buffer={len(audio_buffer)} chunks")
+                            if (
+                                silence_chunks >= SPEECH_THRESHOLD
+                                and len(audio_buffer) >= MIN_AUDIO_CHUNKS
+                            ):
+                                logger.info(
+                                    f"语音段结束，识别中... buffer={len(audio_buffer)} chunks"
+                                )
                                 # 识别语音
                                 audio = np.concatenate(audio_buffer)
                                 logger.debug(f"Concatenated audio shape: {audio.shape}")
                                 try:
                                     logger.info("Calling STT...")
                                     text = stt.transcribe(audio)
+                                    text_clean = text.replace(" ", "")  # 去掉空格
+                                    print(f"[openwakeword STT 识别结果] '{text}' -> '{text_clean}'")
+                                    logger.debug(
+                                        f"[openwakeword STT 识别结果] '{text}' -> '{text_clean}'"
+                                    )
                                     logger.info(f"🎤 识别到: '{text}'")
-                                    # 检查是否包含唤醒词
-                                    if self.hotword in text:
-                                        logger.info(f"🐱 唤醒词 '{self.hotword}' 检测到！")
+                                    # 检查是否包含唤醒词（去掉空格后匹配）
+                                    if self.hotword in text_clean:
+                                        logger.info(
+                                            f"🐱 唤醒词 '{self.hotword}' 检测到！"
+                                        )
                                         await callback()
+                                        # One-shot wakeword mode: leave listening loop immediately.
+                                        self.stop()
+                                        return
                                     else:
-                                        logger.info(f"识别内容不包含唤醒词 '{self.hotword}'，继续监听")
+                                        logger.info(
+                                            f"识别内容不包含唤醒词 '{self.hotword}'（'{text_clean}'），继续监听"
+                                        )
                                 except Exception as e:
                                     logger.error(f"STT 识别异常: {e}", exc_info=True)
                                 # 重置
@@ -144,14 +174,18 @@ class WakewordDetector:
                                 silence_chunks = 0
                             elif silence_chunks >= SPEECH_THRESHOLD:
                                 # 语音太短，丢弃
-                                logger.info(f"语音太短丢弃，buffer={len(audio_buffer)} chunks < {MIN_AUDIO_CHUNKS}")
+                                logger.info(
+                                    f"语音太短丢弃，buffer={len(audio_buffer)} chunks < {MIN_AUDIO_CHUNKS}"
+                                )
                                 audio_buffer = []
                                 is_recording = False
                                 silence_chunks = 0
 
                 # 每 100 帧打印一次状态
                 if total_chunks_processed % 100 == 0:
-                    logger.debug(f"Still listening... total_chunks={total_chunks_processed}")
+                    logger.debug(
+                        f"Still listening... total_chunks={total_chunks_processed}"
+                    )
 
         except Exception as e:
             logger.error(f"唤醒词检测异常: {e}", exc_info=True)
@@ -160,3 +194,11 @@ class WakewordDetector:
         """停止监听"""
         logger.info("Stopping wakeword detection")
         self._running = False
+        # 关闭麦克风流以中断阻塞的迭代
+        if self._audio_stream is not None:
+            logger.info("Closing audio stream...")
+            # 直接调用同步的close方法
+            if hasattr(self._audio_stream, "_stream") and self._audio_stream._stream:
+                self._audio_stream._stream.close()
+            self._audio_stream._closed = True
+            self._audio_stream = None
